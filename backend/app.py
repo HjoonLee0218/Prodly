@@ -1,18 +1,29 @@
-from flask import Flask, jsonify
-from flask_cors import CORS
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 
-def create_app() -> Flask:
-    app = Flask(__name__)
-    CORS(app)
+def create_app() -> FastAPI:
+    app = FastAPI()
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
 
     @app.get("/api/status")
-    def status() -> tuple[dict[str, str], int]:
-        return jsonify({"status": "ok", "message": "Flask backend is running"}), 200
+    async def status() -> dict[str, str]:
+        return {"status": "ok", "message": "FastAPI backend is running"}
 
     return app
 
 
+app = create_app()
+
+
 if __name__ == "__main__":
-    application = create_app()
-    application.run(host="0.0.0.0", port=5000, debug=True)
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=5001)
