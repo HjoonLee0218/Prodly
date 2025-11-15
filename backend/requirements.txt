@@ -1,2 +1,5 @@
 fastapi
 uvicorn[standard]
+pillow
+groq
+dotenv
