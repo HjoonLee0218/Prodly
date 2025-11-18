@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 
 import { createFocusSocket, FocusState } from './api/socket';
+import { analyzeScreen } from './api/analyze';
 import { FocusBanner } from './components/FocusBanner';
 
 const INITIAL_STATE: FocusState = 'on_task';
@@ -12,6 +13,9 @@ function App() {
   const [durationInput, setDurationInput] = useState('25');
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const [timerRunning, setTimerRunning] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<string | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   useEffect(() => {
     const closeSocket = createFocusSocket(setFocusState);
@@ -61,20 +65,45 @@ function App() {
     return `${mins}:${secs}`;
   };
 
+  const triggerAnalysis = async (task: string) => {
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+    try {
+      const response = await analyzeScreen(task);
+      setAnalysisResult(response.summary);
+    } catch (error) {
+      console.error(error);
+      const fallback = 'Unable to analyze the screen. Make sure the backend is running.';
+      if (error instanceof Error) {
+        setAnalysisError(error.message || fallback);
+      } else {
+        setAnalysisError(fallback);
+      }
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   const startSession = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const durationMinutes = Number(durationInput);
     if (!taskInput.trim() || Number.isNaN(durationMinutes) || durationMinutes <= 0) {
       return;
     }
-    setCurrentTask(taskInput.trim());
+    const trimmedTask = taskInput.trim();
+    setCurrentTask(trimmedTask);
     setTimeRemaining(durationMinutes * 60);
     setTimerRunning(true);
+    setAnalysisResult(null);
+    setAnalysisError(null);
+    triggerAnalysis(trimmedTask);
   };
 
   const resetSession = () => {
     setTimerRunning(false);
     setTimeRemaining(null);
+    setAnalysisResult(null);
+    setAnalysisError(null);
   };
 
   return (
@@ -159,6 +188,26 @@ function App() {
                   : 'Start a session to begin the countdown.'}
               </p>
             )}
+            <div className="mt-6 rounded-md border border-slate-800 bg-slate-900/30 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm uppercase tracking-wide text-slate-400">AI check-in</p>
+                <button
+                  type="button"
+                  className="rounded-md border border-slate-600 px-3 py-1 text-xs font-semibold text-slate-100 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!currentTask || isAnalyzing}
+                  onClick={() => currentTask && triggerAnalysis(currentTask)}
+                >
+                  {isAnalyzing ? 'Analyzing...' : 'Refresh'}
+                </button>
+              </div>
+              <div className="mt-3 text-sm text-slate-200">
+                {analysisError && <p className="text-red-400">{analysisError}</p>}
+                {!analysisError && analysisResult && <p>{analysisResult}</p>}
+                {!analysisError && !analysisResult && (
+                  <p className="text-slate-500">Start a session to see what the AI observes.</p>
+                )}
+              </div>
+            </div>
           </div>
         </section>
       </main>
