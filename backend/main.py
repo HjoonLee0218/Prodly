@@ -4,13 +4,19 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from itertools import cycle
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 try:
     from ws_manager import WebSocketManager
 except ModuleNotFoundError:  # pragma: no cover - package import fallback
     from .ws_manager import WebSocketManager
+
+try:
+    from analysis_service import describe_screen, ScreenCaptureError
+except ModuleNotFoundError:  # pragma: no cover - package import fallback
+    from .analysis_service import describe_screen, ScreenCaptureError
 
 manager = WebSocketManager()
 
@@ -48,6 +54,26 @@ app.add_middleware(
 @app.get("/ping")
 async def ping() -> dict[str, str]:
     return {"status": "ok"}
+
+
+class AnalyzeRequest(BaseModel):
+    task_description: str
+
+
+class AnalyzeResponse(BaseModel):
+    summary: str
+
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+    try:
+        summary = await asyncio.to_thread(describe_screen, request.task_description)
+    except ScreenCaptureError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except Exception as error:  # pragma: no cover - runtime safeguard
+        raise HTTPException(status_code=500, detail="Failed to analyze the screen.") from error
+
+    return AnalyzeResponse(summary=summary)
 
 
 @app.websocket("/ws")
