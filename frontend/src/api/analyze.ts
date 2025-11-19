@@ -2,6 +2,7 @@ const API_BASE_URL = 'http://127.0.0.1:8000';
 
 export type AnalyzeResponse = {
   summary: string;
+  state: 'on_task' | 'off_task';
 };
 
 export const analyzeScreen = async (taskDescription: string): Promise<AnalyzeResponse> => {

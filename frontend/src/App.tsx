@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 
-import { createFocusSocket, FocusState } from './api/socket';
-import { analyzeScreen } from './api/analyze';
+import { createFocusSocket, FocusMessage, FocusState } from './api/socket';
+import { endSession, getSession, startSession as startSessionRequest } from './api/session';
 import { FocusBanner } from './components/FocusBanner';
 
 const INITIAL_STATE: FocusState = 'on_task';
@@ -15,12 +15,62 @@ function App() {
   const [timerRunning, setTimerRunning] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [lastAnalysisTimestamp, setLastAnalysisTimestamp] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
   useEffect(() => {
-    const closeSocket = createFocusSocket(setFocusState);
+    const closeSocket = createFocusSocket({
+      onStateChange: setFocusState,
+      onMessage: (payload: FocusMessage) => {
+        if (typeof payload.session_active === 'boolean' && !payload.session_active) {
+          setTimerRunning(false);
+          setTimeRemaining(null);
+          setCurrentTask(null);
+        }
+        if (payload.task) {
+          setCurrentTask(payload.task);
+        }
+        if (payload.summary) {
+          setAnalysisResult(payload.summary);
+          setAnalysisError(null);
+        }
+        if (payload.timestamp) {
+          setLastAnalysisTimestamp(payload.timestamp);
+        }
+        if (payload.error) {
+          setAnalysisError(payload.error);
+        }
+      },
+    });
     return () => {
       closeSocket();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadSession = async () => {
+      try {
+        const session = await getSession();
+        if (!session || !isMounted) {
+          return;
+        }
+        setCurrentTask(session.task_description);
+        setTimeRemaining(session.seconds_remaining);
+        setTimerRunning(session.seconds_remaining > 0);
+        setAnalysisResult(session.last_summary ?? null);
+        if (session.last_state) {
+          setFocusState(session.last_state);
+        }
+      } catch (error) {
+        console.error('Failed to load session', error);
+      }
+    };
+
+    void loadSession();
+    return () => {
+      isMounted = false;
     };
   }, []);
 
@@ -65,45 +115,65 @@ function App() {
     return `${mins}:${secs}`;
   };
 
-  const triggerAnalysis = async (task: string) => {
-    setIsAnalyzing(true);
-    setAnalysisError(null);
-    try {
-      const response = await analyzeScreen(task);
-      setAnalysisResult(response.summary);
-    } catch (error) {
-      console.error(error);
-      const fallback = 'Unable to analyze the screen. Make sure the backend is running.';
-      if (error instanceof Error) {
-        setAnalysisError(error.message || fallback);
-      } else {
-        setAnalysisError(fallback);
-      }
-    } finally {
-      setIsAnalyzing(false);
+  const formattedTimestamp = useMemo(() => {
+    if (!lastAnalysisTimestamp) {
+      return null;
     }
-  };
+    const date = new Date(lastAnalysisTimestamp);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }, [lastAnalysisTimestamp]);
 
-  const startSession = (event: FormEvent<HTMLFormElement>) => {
+  const startSession = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const durationMinutes = Number(durationInput);
     if (!taskInput.trim() || Number.isNaN(durationMinutes) || durationMinutes <= 0) {
       return;
     }
-    const trimmedTask = taskInput.trim();
-    setCurrentTask(trimmedTask);
-    setTimeRemaining(durationMinutes * 60);
-    setTimerRunning(true);
-    setAnalysisResult(null);
+    setIsSubmitting(true);
+    setSessionError(null);
     setAnalysisError(null);
-    triggerAnalysis(trimmedTask);
+
+    try {
+      const session = await startSessionRequest({
+        task_description: taskInput.trim(),
+        duration_minutes: durationMinutes,
+      });
+      setCurrentTask(session.task_description);
+      setTimeRemaining(session.seconds_remaining);
+      setTimerRunning(true);
+      setAnalysisResult(session.last_summary ?? null);
+      setLastAnalysisTimestamp(null);
+    } catch (error) {
+      console.error(error);
+      const fallback = 'Unable to start the focus session.';
+      if (error instanceof Error) {
+        setSessionError(error.message || fallback);
+      } else {
+        setSessionError(fallback);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const resetSession = () => {
+  const endCurrentSession = async () => {
     setTimerRunning(false);
     setTimeRemaining(null);
     setAnalysisResult(null);
-    setAnalysisError(null);
+    setLastAnalysisTimestamp(null);
+    setCurrentTask(null);
+    setSessionError(null);
+    try {
+      await endSession();
+    } catch (error) {
+      console.error('Failed to end session', error);
+      if (error instanceof Error) {
+        setSessionError(error.message);
+      }
+    }
   };
 
   return (
@@ -155,20 +225,23 @@ function App() {
                 className="w-32 rounded-md border border-slate-700 bg-slate-950/70 px-3 py-2 text-base text-slate-100 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400"
               />
             </label>
+            {sessionError && <p className="text-sm text-red-400">{sessionError}</p>}
             <div className="flex flex-wrap gap-3">
               <button
                 type="submit"
                 className="rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-emerald-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-800 disabled:text-emerald-200"
-                disabled={!taskInput.trim() || Number(durationInput) <= 0}
+                disabled={!taskInput.trim() || Number(durationInput) <= 0 || isSubmitting}
               >
-                Start session
+                {isSubmitting ? 'Starting...' : 'Start session'}
               </button>
               <button
                 type="button"
-                onClick={resetSession}
+                onClick={() => {
+                  void endCurrentSession();
+                }}
                 className="rounded-md border border-slate-600 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-400 hover:text-slate-50"
               >
-                Reset
+                End session
               </button>
             </div>
           </form>
@@ -189,22 +262,19 @@ function App() {
               </p>
             )}
             <div className="mt-6 rounded-md border border-slate-800 bg-slate-900/30 p-4">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm uppercase tracking-wide text-slate-400">AI check-in</p>
-                <button
-                  type="button"
-                  className="rounded-md border border-slate-600 px-3 py-1 text-xs font-semibold text-slate-100 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={!currentTask || isAnalyzing}
-                  onClick={() => currentTask && triggerAnalysis(currentTask)}
-                >
-                  {isAnalyzing ? 'Analyzing...' : 'Refresh'}
-                </button>
+                {formattedTimestamp && (
+                  <p className="text-xs text-slate-500">Updated {formattedTimestamp}</p>
+                )}
               </div>
               <div className="mt-3 text-sm text-slate-200">
                 {analysisError && <p className="text-red-400">{analysisError}</p>}
                 {!analysisError && analysisResult && <p>{analysisResult}</p>}
                 {!analysisError && !analysisResult && (
-                  <p className="text-slate-500">Start a session to see what the AI observes.</p>
+                  <p className="text-slate-500">
+                    Start a focus session to receive automatic screen reviews.
+                  </p>
                 )}
               </div>
             </div>
