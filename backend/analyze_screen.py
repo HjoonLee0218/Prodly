@@ -12,13 +12,13 @@ print("Screen analyzer starting...")
 try:
     while True:
         start = time.time()
-        description = describe_screen("Describe the user's activity.")
+        analysis = describe_screen("Describe the user's activity.")
         processing_time = time.time() - start
-        
         print(f"\n[{time.strftime('%H:%M:%S')}] ({processing_time:.1f}s)")
-        print(f"{description}")
+        print(f"State: {analysis.state}")
+        print(f"{analysis.summary}")
         print("Waiting 10 seconds...")
         time.sleep(10)
-        
+
 except KeyboardInterrupt:
     print("\nStopped.")
